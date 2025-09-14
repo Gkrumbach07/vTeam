@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ambient-webhook
+  namespace: ambient-system
+  labels:
+    app: ambient-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ambient-webhook
+  template:
+    metadata:
+      labels:
+        app: ambient-webhook
+    spec:
+      serviceAccountName: ambient-webhook
+      containers:
+      - name: webhook
+        image: localhost/ambient-webhook:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8443
+          name: webhook-api
+        volumeMounts:
+        - name: webhook-certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
+        env:
+        - name: TLS_CERT_FILE
+          value: /tmp/k8s-webhook-server/serving-certs/tls.crt
+        - name: TLS_PRIVATE_KEY_FILE
+          value: /tmp/k8s-webhook-server/serving-certs/tls.key
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: webhook-certs
+        secret:
+          secretName: ambient-webhook-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ambient-webhook-service
+  namespace: ambient-system
+  labels:
+    app: ambient-webhook
+spec:
+  ports:
+  - name: webhook
+    port: 443
+    targetPort: 8443
+  selector:
+    app: ambient-webhook
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ambient-webhook
+  namespace: ambient-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ambient-webhook
+rules:
+- apiGroups: ["ambient.ai"]
+  resources: ["sessions", "namespacepolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ambient-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ambient-webhook
+subjects:
+- kind: ServiceAccount
+  name: ambient-webhook
+  namespace: ambient-system

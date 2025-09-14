@@ -1,0 +1,285 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: namespacepolicies.ambient.ai
+  labels:
+    app.kubernetes.io/name: ambient-agentic-platform
+    app.kubernetes.io/component: crd
+spec:
+  group: ambient.ai
+  scope: Namespaced
+  names:
+    plural: namespacepolicies
+    singular: namespacepolicy
+    kind: NamespacePolicy
+    shortNames:
+    - nspolicy
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        required:
+        - spec
+        properties:
+          spec:
+            type: object
+            properties:
+              models:
+                type: object
+                properties:
+                  allowed:
+                    type: array
+                    items:
+                      type: string
+                    description: "List of allowed AI models"
+                  blocked:
+                    type: array
+                    items:
+                      type: string
+                    description: "List of blocked AI models"
+                  budget:
+                    type: object
+                    properties:
+                      monthly:
+                        type: string
+                        pattern: '^[0-9]+\.[0-9]{2}$'
+                        description: "Monthly budget in USD (e.g., '100.00')"
+                      currency:
+                        type: string
+                        enum:
+                        - USD
+                        default: USD
+                      resetDay:
+                        type: integer
+                        minimum: 1
+                        maximum: 28
+                        default: 1
+                        description: "Day of month when budget resets"
+                    description: "Budget constraints for AI model usage"
+                description: "AI model usage policies"
+              tools:
+                type: object
+                properties:
+                  allowed:
+                    type: array
+                    items:
+                      type: string
+                    description: "List of allowed tools/commands"
+                  blocked:
+                    type: array
+                    items:
+                      type: string
+                    description: "List of blocked tools/commands"
+                  restrictions:
+                    type: object
+                    properties:
+                      network:
+                        type: boolean
+                        description: "Allow network access"
+                      fileSystem:
+                        type: boolean
+                        description: "Allow file system access"
+                      execution:
+                        type: boolean
+                        description: "Allow code execution"
+                    description: "Tool capability restrictions"
+                description: "Tool usage policies"
+              approval:
+                type: object
+                properties:
+                  required:
+                    type: boolean
+                    default: false
+                    description: "Whether sessions require approval"
+                  approvers:
+                    type: array
+                    items:
+                      type: string
+                    description: "List of users/groups who can approve"
+                  autoApprove:
+                    type: object
+                    properties:
+                      triggers:
+                        type: array
+                        items:
+                          type: string
+                        description: "Trigger sources that are auto-approved"
+                      budget:
+                        type: string
+                        description: "Auto-approve if under this budget"
+                    description: "Auto-approval criteria"
+                description: "Approval workflow configuration"
+              retention:
+                type: object
+                properties:
+                  sessions:
+                    type: string
+                    pattern: '^[0-9]+[dwmy]$'
+                    default: "90d"
+                    description: "Session retention period (e.g., '90d', '1y')"
+                  artifacts:
+                    type: string
+                    pattern: '^[0-9]+[dwmy]$'
+                    default: "30d"
+                    description: "Artifact retention period"
+                  auditLogs:
+                    type: string
+                    pattern: '^[0-9]+[dwmy]$'
+                    default: "7y"
+                    description: "Audit log retention period"
+                description: "Data retention policies"
+              notifications:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                      - url
+                      - events
+                      properties:
+                        url:
+                          type: string
+                          format: uri
+                          description: "Webhook URL for notifications"
+                        events:
+                          type: array
+                          items:
+                            type: string
+                            enum:
+                            - session.created
+                            - session.started
+                            - session.completed
+                            - session.failed
+                            - session.approved
+                            - session.rejected
+                            - budget.warning
+                            - budget.exceeded
+                          description: "Events that trigger notifications"
+                        headers:
+                          type: object
+                          additionalProperties:
+                            type: string
+                          description: "Additional HTTP headers"
+                        secret:
+                          type: string
+                          description: "Secret name containing auth credentials"
+                    description: "Webhook notification configuration"
+                  email:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      recipients:
+                        type: array
+                        items:
+                          type: string
+                        description: "Email recipients"
+                      events:
+                        type: array
+                        items:
+                          type: string
+                        description: "Events that trigger email notifications"
+                    description: "Email notification configuration"
+                description: "Notification settings"
+              webhookAuth:
+                type: object
+                properties:
+                  apiKeys:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: "API keys for different webhook sources (hashed)"
+                  rateLimit:
+                    type: object
+                    properties:
+                      requestsPerMinute:
+                        type: integer
+                        default: 10
+                      burstSize:
+                        type: integer
+                        default: 20
+                    description: "Rate limiting configuration"
+                description: "Webhook authentication and rate limiting"
+          status:
+            type: object
+            properties:
+              usage:
+                type: object
+                properties:
+                  budget:
+                    type: object
+                    properties:
+                      currentMonth:
+                        type: number
+                        format: double
+                        description: "Current month usage in USD"
+                      lastReset:
+                        type: string
+                        format: date-time
+                        description: "Last budget reset time"
+                      percentUsed:
+                        type: number
+                        format: double
+                        description: "Percentage of budget used"
+                    description: "Budget usage tracking"
+                  sessions:
+                    type: object
+                    properties:
+                      active:
+                        type: integer
+                        description: "Number of active sessions"
+                      total:
+                        type: integer
+                        description: "Total sessions this month"
+                    description: "Session usage statistics"
+                description: "Policy usage statistics"
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                      - BudgetWarning
+                      - BudgetExceeded
+                      - PolicyViolation
+                      - ConfigValid
+                    status:
+                      type: string
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                description: "Policy status conditions"
+    additionalPrinterColumns:
+    - name: Budget
+      type: string
+      description: Monthly budget limit
+      jsonPath: .spec.models.budget.monthly
+    - name: Sessions
+      type: integer
+      description: Active sessions
+      jsonPath: .status.usage.sessions.active
+    - name: Budget Used
+      type: string
+      description: Percentage of budget used
+      jsonPath: .status.usage.budget.percentUsed
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    subresources:
+      status: {}

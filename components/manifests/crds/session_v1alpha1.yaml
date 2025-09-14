@@ -1,0 +1,265 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sessions.ambient.ai
+  labels:
+    app.kubernetes.io/name: ambient-agentic-platform
+    app.kubernetes.io/component: crd
+spec:
+  group: ambient.ai
+  scope: Namespaced
+  names:
+    plural: sessions
+    singular: session
+    kind: Session
+    shortNames:
+    - sess
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        required:
+        - spec
+        properties:
+          spec:
+            type: object
+            required:
+            - framework
+            properties:
+              trigger:
+                type: object
+                properties:
+                  source:
+                    type: string
+                    enum:
+                    - github
+                    - jira
+                    - slack
+                    - generic
+                    - manual
+                    description: "Source that triggered the session"
+                  event:
+                    type: string
+                    description: "Event type that triggered the session"
+                  payload:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    description: "Original trigger payload"
+                description: "Information about what triggered this session"
+              framework:
+                type: object
+                required:
+                - type
+                properties:
+                  type:
+                    type: string
+                    description: "Agentic framework type (e.g., claude-code, langchain)"
+                  version:
+                    type: string
+                    description: "Framework version"
+                  config:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    description: "Framework-specific configuration"
+                description: "Agentic framework configuration"
+              policy:
+                type: object
+                properties:
+                  modelConstraints:
+                    type: object
+                    properties:
+                      allowed:
+                        type: array
+                        items:
+                          type: string
+                        description: "List of allowed AI models"
+                      budget:
+                        type: string
+                        description: "Budget limit in USD"
+                    description: "Model usage constraints"
+                  toolConstraints:
+                    type: object
+                    properties:
+                      allowed:
+                        type: array
+                        items:
+                          type: string
+                        description: "List of allowed tools"
+                      blocked:
+                        type: array
+                        items:
+                          type: string
+                        description: "List of blocked tools"
+                    description: "Tool usage constraints"
+                  approvalRequired:
+                    type: boolean
+                    description: "Whether human approval is required"
+                description: "Policy constraints for this session"
+              artifacts:
+                type: object
+                properties:
+                  references:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                          - s3
+                          - pvc
+                          - external
+                        location:
+                          type: string
+                    description: "Framework-agnostic artifact references"
+                  storage:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                        - s3
+                        - pvc
+                        - external
+                      location:
+                        type: string
+                      credentials:
+                        type: string
+                        description: "Secret name containing storage credentials"
+                    description: "Artifact storage configuration"
+                description: "Artifact management configuration"
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum:
+                - Pending
+                - Running
+                - Completed
+                - Failed
+                default: Pending
+                description: "Current phase of the session"
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                      - PolicyValidated
+                      - WorkloadCreated
+                      - ArtifactsGenerated
+                      - Completed
+                      - Failed
+                    status:
+                      type: string
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                description: "Detailed condition information"
+              history:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    timestamp:
+                      type: string
+                      format: date-time
+                    event:
+                      type: string
+                    data:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    actor:
+                      type: string
+                description: "Append-only history of session events"
+              artifacts:
+                type: object
+                properties:
+                  generated:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                          - log
+                          - output
+                          - intermediate
+                          - error
+                        location:
+                          type: string
+                        size:
+                          type: integer
+                          format: int64
+                        contentType:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                        metadata:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                    description: "List of generated artifacts"
+                description: "Artifact status information"
+              workload:
+                type: object
+                properties:
+                  podName:
+                    type: string
+                  jobName:
+                    type: string
+                  resources:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  startTime:
+                    type: string
+                    format: date-time
+                  completionTime:
+                    type: string
+                    format: date-time
+                description: "Kubernetes workload information"
+              cost:
+                type: object
+                properties:
+                  total:
+                    type: number
+                    format: double
+                    description: "Total cost in USD"
+                  breakdown:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    description: "Cost breakdown by component"
+                description: "Cost tracking information"
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      description: Current phase of the session
+      jsonPath: .status.phase
+    - name: Framework
+      type: string
+      description: Agentic framework type
+      jsonPath: .spec.framework.type
+    - name: Trigger
+      type: string
+      description: What triggered this session
+      jsonPath: .spec.trigger.source
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    subresources:
+      status: {}

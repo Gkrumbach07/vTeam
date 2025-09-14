@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 
 class ClaudeRunner:
     def __init__(self):
-        self.session_name = os.getenv("AGENTIC_SESSION_NAME", "")
-        self.session_namespace = os.getenv("AGENTIC_SESSION_NAMESPACE", "default")
+        self.session_name = os.getenv("SESSION_NAME", "")
+        self.session_namespace = os.getenv("SESSION_NAMESPACE", "default")
         self.prompt = os.getenv("PROMPT", "")
         self.website_url = os.getenv("WEBSITE_URL", "")
         self.timeout = int(os.getenv("TIMEOUT", "300"))
         self.backend_api_url = os.getenv(
-            "BACKEND_API_URL", "http://backend-service:8080/api"
+            "BACKEND_API_URL", "http://backend-service:8080/api/v1"
         )
 
         # Validate Anthropic API key for Claude Code
@@ -43,6 +43,7 @@ class ClaudeRunner:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
 
         logger.info(f"Initialized ClaudeRunner for session: {self.session_name}")
+        logger.info(f"Namespace: {self.session_namespace}")
         logger.info(f"Website URL: {self.website_url}")
         logger.info("Using Claude Code CLI with Playwright MCP")
 
@@ -237,7 +238,7 @@ Return only the display name, nothing else."""
     async def _update_display_name(self, display_name: str):
         """Update the display name via backend API"""
         try:
-            url = f"{self.backend_api_url}/agentic-sessions/{self.session_name}/displayname"
+            url = f"{self.backend_api_url}/sessions/{self.session_namespace}/{self.session_name}/displayname"
 
             payload = {"displayName": display_name}
 
@@ -471,9 +472,9 @@ Use your browser automation tools to:
 Provide a clear, direct answer to the agentic query based on what you find on the website. Focus on answering the specific question rather than providing a comprehensive website analysis."""
 
     async def update_session_status(self, status_update: Dict[str, Any]):
-        """Update the AgenticSession status via the backend API"""
+        """Update the Session status via the backend API"""
         try:
-            url = f"{self.backend_api_url}/agentic-sessions/{self.session_name}/status"
+            url = f"{self.backend_api_url}/sessions/{self.session_namespace}/{self.session_name}/status"
 
             logger.info(
                 f"Updating session status: {status_update.get('phase', 'unknown')}"
@@ -501,7 +502,8 @@ async def main():
 
     # Validate required environment variables
     required_vars = [
-        "AGENTIC_SESSION_NAME",
+        "SESSION_NAME",
+        "SESSION_NAMESPACE",
         "PROMPT",
         "WEBSITE_URL",
         "ANTHROPIC_API_KEY",

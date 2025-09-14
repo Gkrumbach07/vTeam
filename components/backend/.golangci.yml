@@ -1,0 +1,45 @@
+run:
+  timeout: 5m
+  go: '1.24'
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - goimports
+    - misspell
+    - gocritic
+    - gocyclo
+    - gofmt
+    - unconvert
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - experimental
+  gofmt:
+    simplify: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+    - path: tests/
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec

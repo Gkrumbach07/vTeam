@@ -22,7 +22,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Technology Stack**: Kubernetes-native with Go backend, NextJS frontend, Python AI service
 - **AI Integration**: Ambient Code AI with MCP server capabilities for browser automation
 - **Architecture**: Microservices with Custom Resources, Operators, and Job execution
+- **Multi-tenancy**: Namespace-based isolation with RBAC integration and policy enforcement
 - **Capabilities**: Generic agentic task execution including website analysis, automation, and data processing
+- **Session CRD**: Generic session management supporting multiple agentic frameworks
+- **Webhook Integration**: External tool integration (GitHub, Jira, Slack) with API key authentication
 
 ### vTeam Tools (`tools/`)
 - **vTeam Shared Configs**: CLI tool (`vteam-config`) for Claude Code configuration management
@@ -78,6 +81,14 @@ pre-commit run --all-files
 3. **Agent Roles**: Enum-based agent system with predefined responsibilities
 4. **Conversational AI**: ChatInterface provides natural language RFE creation
 5. **Cost Tracking**: Built-in usage monitoring for AI API calls
+
+### Ambient Platform Architecture
+1. **Multi-tenant Sessions**: Generic Session CRD with namespace-scoped isolation
+2. **External Tool Integration**: Webhook processing with API key authentication
+3. **Policy Enforcement**: Namespace policies constraining models, tools, budgets
+4. **RBAC Integration**: Kubernetes-native access control for viewer/editor permissions
+5. **Framework Agnostic**: Pluggable agentic framework support via generic artifact references
+6. **Audit Trail**: Append-only history for compliance and debugging
 
 ### Agent Role Mapping
 - **Parker (PM)**: Prioritizes RFEs and communicates assessments

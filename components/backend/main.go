@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"ambient-code-backend/pkg/handlers"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -48,9 +49,13 @@ func main() {
 	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
 	r.Use(cors.New(config))
 
+	// Initialize handlers
+	webhookHandler := handlers.NewWebhookHandler(dynamicClient)
+
 	// API routes
 	api := r.Group("/api")
 	{
+		// Legacy AgenticSession routes (will be removed in clean migration)
 		api.GET("/agentic-sessions", listAgenticSessions)
 		api.GET("/agentic-sessions/:name", getAgenticSession)
 		api.POST("/agentic-sessions", createAgenticSession)
@@ -58,6 +63,28 @@ func main() {
 		api.PUT("/agentic-sessions/:name/status", updateAgenticSessionStatus)
 		api.PUT("/agentic-sessions/:name/displayname", updateAgenticSessionDisplayName)
 		api.POST("/agentic-sessions/:name/stop", stopAgenticSession)
+	}
+
+	// New multi-tenant API routes
+	v1api := r.Group("/api/v1")
+	{
+		// Webhook endpoints
+		v1api.POST("/webhooks/github", webhookHandler.HandleGitHubWebhook)
+		v1api.POST("/webhooks/jira", webhookHandler.HandleJiraWebhook)
+		v1api.POST("/webhooks/slack", webhookHandler.HandleSlackWebhook)
+
+		// Session management endpoints
+		v1api.GET("/namespaces/:namespace/sessions", handleListSessions)
+		v1api.POST("/namespaces/:namespace/sessions", handleCreateSession)
+		v1api.GET("/namespaces/:namespace/sessions/:id", handleGetSession)
+		v1api.GET("/namespaces/:namespace/sessions/:id/artifacts", handleListArtifacts)
+
+		// Session status and display name updates (for runner)
+		v1api.PUT("/sessions/:namespace/:name/status", updateSessionStatus)
+		v1api.PUT("/sessions/:namespace/:name/displayname", updateSessionDisplayName)
+
+		// User namespace access
+		v1api.GET("/user/namespaces", handleUserNamespaces)
 	}
 
 	// Health check endpoint
@@ -583,4 +610,290 @@ func parseStatus(status map[string]interface{}) *AgenticSessionStatus {
 	}
 
 	return result
+}
+
+// Session CRD GroupVersionResource
+var sessionGVR = schema.GroupVersionResource{
+	Group:    "ambient.ai",
+	Version:  "v1alpha1",
+	Resource: "sessions",
+}
+
+// NamespacePolicy CRD GroupVersionResource
+var namespacePolicyGVR = schema.GroupVersionResource{
+	Group:    "ambient.ai",
+	Version:  "v1alpha1",
+	Resource: "namespacepolicies",
+}
+
+func handleListSessions(c *gin.Context) {
+	namespace := c.Param("namespace")
+	if namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "namespace is required"})
+		return
+	}
+
+	list, err := dynamicClient.Resource(sessionGVR).Namespace(namespace).List(context.TODO(), v1.ListOptions{})
+	if err != nil {
+		log.Printf("Failed to list sessions in namespace %s: %v", namespace, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list sessions"})
+		return
+	}
+
+	var sessions []map[string]interface{}
+	for _, item := range list.Items {
+		session := map[string]interface{}{
+			"name":      item.GetName(),
+			"namespace": item.GetNamespace(),
+			"uid":       item.GetUID(),
+			"created":   item.GetCreationTimestamp(),
+		}
+
+		if spec, ok := item.Object["spec"]; ok {
+			session["spec"] = spec
+		}
+
+		if status, ok := item.Object["status"]; ok {
+			session["status"] = status
+		}
+
+		sessions = append(sessions, session)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+}
+
+func handleCreateSession(c *gin.Context) {
+	namespace := c.Param("namespace")
+	if namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "namespace is required"})
+		return
+	}
+
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Generate unique name
+	timestamp := time.Now().Unix()
+	name := fmt.Sprintf("session-%d", timestamp)
+
+	// Create the session CRD
+	session := map[string]interface{}{
+		"apiVersion": "ambient.ai/v1alpha1",
+		"kind":       "Session",
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": namespace,
+		},
+		"spec": req,
+		"status": map[string]interface{}{
+			"phase": "Pending",
+		},
+	}
+
+	obj := &unstructured.Unstructured{Object: session}
+	created, err := dynamicClient.Resource(sessionGVR).Namespace(namespace).Create(context.TODO(), obj, v1.CreateOptions{})
+	if err != nil {
+		log.Printf("Failed to create session: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Session created successfully",
+		"name":    name,
+		"uid":     created.GetUID(),
+	})
+}
+
+func handleGetSession(c *gin.Context) {
+	namespace := c.Param("namespace")
+	id := c.Param("id")
+	if namespace == "" || id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "namespace and id are required"})
+		return
+	}
+
+	item, err := dynamicClient.Resource(sessionGVR).Namespace(namespace).Get(context.TODO(), id, v1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Session not found"})
+			return
+		}
+		log.Printf("Failed to get session %s/%s: %v", namespace, id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get session"})
+		return
+	}
+
+	session := map[string]interface{}{
+		"name":      item.GetName(),
+		"namespace": item.GetNamespace(),
+		"uid":       item.GetUID(),
+		"created":   item.GetCreationTimestamp(),
+	}
+
+	if spec, ok := item.Object["spec"]; ok {
+		session["spec"] = spec
+	}
+
+	if status, ok := item.Object["status"]; ok {
+		session["status"] = status
+	}
+
+	c.JSON(http.StatusOK, session)
+}
+
+func handleListArtifacts(c *gin.Context) {
+	namespace := c.Param("namespace")
+	id := c.Param("id")
+	if namespace == "" || id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "namespace and id are required"})
+		return
+	}
+
+	// Get the session to check if it exists and get artifacts from status
+	item, err := dynamicClient.Resource(sessionGVR).Namespace(namespace).Get(context.TODO(), id, v1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Session not found"})
+			return
+		}
+		log.Printf("Failed to get session %s/%s: %v", namespace, id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get session"})
+		return
+	}
+
+	// Extract artifacts from session status
+	var artifacts []interface{}
+	if status, ok := item.Object["status"].(map[string]interface{}); ok {
+		if statusArtifacts, ok := status["artifacts"]; ok {
+			if artifactList, ok := statusArtifacts.([]interface{}); ok {
+				artifacts = artifactList
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"artifacts": artifacts})
+}
+
+func handleUserNamespaces(c *gin.Context) {
+	// TODO: Implement proper RBAC integration to get user's accessible namespaces
+	// For now, return mock data for frontend development
+	namespaces := []map[string]interface{}{
+		{
+			"namespace":  "team-alpha",
+			"permission": "editor",
+			"policy": map[string]interface{}{
+				"budget":         "100.00",
+				"sessionsActive": 3,
+			},
+		},
+		{
+			"namespace":  "team-beta",
+			"permission": "viewer",
+			"policy": map[string]interface{}{
+				"budget":         "50.00",
+				"sessionsActive": 1,
+			},
+		},
+	}
+
+	c.JSON(http.StatusOK, gin.H{"namespaces": namespaces})
+}
+
+func updateSessionStatus(c *gin.Context) {
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	if namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "namespace and name are required"})
+		return
+	}
+
+	var statusUpdate map[string]interface{}
+	if err := c.ShouldBindJSON(&statusUpdate); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get current session
+	item, err := dynamicClient.Resource(sessionGVR).Namespace(namespace).Get(context.TODO(), name, v1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Session not found"})
+			return
+		}
+		log.Printf("Failed to get session %s/%s: %v", namespace, name, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get session"})
+		return
+	}
+
+	// Update status
+	if item.Object["status"] == nil {
+		item.Object["status"] = make(map[string]interface{})
+	}
+
+	status := item.Object["status"].(map[string]interface{})
+	for key, value := range statusUpdate {
+		status[key] = value
+	}
+
+	// Update the resource
+	_, err = dynamicClient.Resource(sessionGVR).Namespace(namespace).Update(context.TODO(), item, v1.UpdateOptions{})
+	if err != nil {
+		log.Printf("Failed to update session status %s/%s: %v", namespace, name, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update session status"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Session status updated successfully"})
+}
+
+func updateSessionDisplayName(c *gin.Context) {
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	if namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "namespace and name are required"})
+		return
+	}
+
+	var displayNameUpdate struct {
+		DisplayName string `json:"displayName"`
+	}
+	if err := c.ShouldBindJSON(&displayNameUpdate); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get current session
+	item, err := dynamicClient.Resource(sessionGVR).Namespace(namespace).Get(context.TODO(), name, v1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Session not found"})
+			return
+		}
+		log.Printf("Failed to get session %s/%s: %v", namespace, name, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get session"})
+		return
+	}
+
+	// Update spec with display name
+	if item.Object["spec"] == nil {
+		item.Object["spec"] = make(map[string]interface{})
+	}
+
+	spec := item.Object["spec"].(map[string]interface{})
+	spec["displayName"] = displayNameUpdate.DisplayName
+
+	// Update the resource
+	_, err = dynamicClient.Resource(sessionGVR).Namespace(namespace).Update(context.TODO(), item, v1.UpdateOptions{})
+	if err != nil {
+		log.Printf("Failed to update session display name %s/%s: %v", namespace, name, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update session display name"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Session display name updated successfully"})
 }

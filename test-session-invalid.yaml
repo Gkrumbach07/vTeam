@@ -1,0 +1,23 @@
+apiVersion: ambient.ai/v1alpha1
+kind: Session
+metadata:
+  name: test-session-invalid
+  namespace: ambient-system
+spec:
+  trigger:
+    source: "manual"
+    event: "test"
+    payload:
+      test: true
+  framework:
+    type: "unsupported-framework"  # This should fail validation
+    version: "latest"
+    config:
+      model: "claude-3-sonnet"
+  policy:
+    modelConstraints:
+      allowed: ["claude-3-sonnet"]
+      budget: "100.00"
+    toolConstraints:
+      allowed: ["bash", "read", "write"]
+    approvalRequired: false

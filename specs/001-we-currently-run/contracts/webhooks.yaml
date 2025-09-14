@@ -1,0 +1,263 @@
+openapi: 3.0.3
+info:
+  title: Webhook API
+  description: External tool webhook endpoints for session creation
+  version: 1.0.0
+
+servers:
+  - url: https://ambient-platform.example.com/api/v1
+    description: Production API server
+
+paths:
+  /webhooks/{source}:
+    post:
+      summary: Process webhook from external tool
+      description: |
+        Receives webhooks from external tools (GitHub, Jira, Slack) and creates
+        agentic sessions based on the payload and namespace policies.
+      operationId: processWebhook
+      parameters:
+        - name: source
+          in: path
+          required: true
+          description: Source tool identifier
+          schema:
+            type: string
+            enum: [github, jira, slack, generic]
+        - name: X-API-Key
+          in: header
+          required: true
+          description: API key for authentication and namespace resolution
+          schema:
+            type: string
+            minLength: 32
+      requestBody:
+        description: Webhook payload from external tool
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: Raw webhook payload (tool-specific format)
+            examples:
+              github:
+                summary: GitHub pull request webhook
+                value:
+                  action: "opened"
+                  pull_request:
+                    id: 123
+                    title: "Add new feature"
+                    body: "Description of changes"
+                  repository:
+                    name: "my-repo"
+                    owner:
+                      login: "my-org"
+              jira:
+                summary: Jira issue webhook
+                value:
+                  webhookEvent: "jira:issue_updated"
+                  issue:
+                    key: "PROJ-123"
+                    fields:
+                      summary: "Bug fix needed"
+                      description: "Details about the bug"
+      responses:
+        '202':
+          description: Webhook accepted for processing
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - sessionId
+                  - namespace
+                  - status
+                properties:
+                  sessionId:
+                    type: string
+                    format: uuid
+                    description: Generated session UUID
+                  namespace:
+                    type: string
+                    description: Target namespace resolved from API key
+                  status:
+                    type: string
+                    enum: [accepted, queued]
+                    description: Processing status
+                  estimatedStartTime:
+                    type: string
+                    format: date-time
+                    description: When session is expected to start
+              examples:
+                success:
+                  summary: Webhook accepted
+                  value:
+                    sessionId: "550e8400-e29b-41d4-a716-446655440000"
+                    namespace: "team-alpha"
+                    status: "accepted"
+                    estimatedStartTime: "2025-09-14T10:05:00Z"
+        '400':
+          description: Bad request - invalid payload or headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                missing_api_key:
+                  summary: Missing API key
+                  value:
+                    error: "missing_api_key"
+                    message: "X-API-Key header is required"
+                invalid_payload:
+                  summary: Invalid JSON payload
+                  value:
+                    error: "invalid_payload"
+                    message: "Request body must be valid JSON"
+        '401':
+          description: Unauthorized - invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_key:
+                  summary: Invalid API key
+                  value:
+                    error: "invalid_api_key"
+                    message: "API key is invalid or expired"
+        '403':
+          description: Forbidden - policy violation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                policy_violation:
+                  summary: Policy violation
+                  value:
+                    error: "policy_violation"
+                    message: "Session creation would exceed namespace budget"
+        '429':
+          description: Too many requests - rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limit:
+                  summary: Rate limit exceeded
+                  value:
+                    error: "rate_limit_exceeded"
+                    message: "Maximum 10 sessions per minute exceeded"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /webhooks/{source}/validate:
+    post:
+      summary: Validate webhook payload without creating session
+      description: |
+        Dry-run validation of webhook payload to check if it would
+        successfully create a session.
+      operationId: validateWebhook
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [github, jira, slack, generic]
+        - name: X-API-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: Webhook payload to validate
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Validation successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - valid
+                  - namespace
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+                  namespace:
+                    type: string
+                    example: "team-alpha"
+                  framework:
+                    type: string
+                    example: "claude-code"
+                  estimatedCost:
+                    type: number
+                    format: float
+                    example: 2.50
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+                    example: ["High resource usage expected"]
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      valid:
+                        type: boolean
+                        example: false
+                      violations:
+                        type: array
+                        items:
+                          type: string
+                        example: ["Budget exceeded", "Model not allowed"]
+
+components:
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Error code for programmatic handling
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional error context
+        traceId:
+          type: string
+          description: Request trace ID for debugging
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+security:
+  - ApiKeyAuth: []

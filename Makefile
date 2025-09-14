@@ -1,4 +1,4 @@
-.PHONY: help setup-env build-all build-frontend build-backend build-operator build-runner deploy clean dev-frontend dev-backend lint test registry-login push-all
+.PHONY: help setup-env build-all build-frontend build-backend build-operator build-runner deploy clean dev-frontend dev-backend lint test test-backend test-operator test-frontend test-e2e test-coverage registry-login push-all
 
 # Default target
 help: ## Show this help message
@@ -65,6 +65,34 @@ build-runner: ## Build the Claude Code runner container image
 deploy: ## Deploy all components to Kubernetes
 	@echo "Deploying to Kubernetes..."
 	cd components/manifests && ./deploy.sh
+
+# Testing targets
+test: ## Run all tests
+	@echo "Running backend tests..."
+	cd components/backend && go test -v ./...
+	@echo "Running operator tests..."
+	cd components/operator && go test -v ./...
+	@echo "Running frontend tests..."
+	cd components/frontend && npm test
+	@echo "Running e2e tests..."
+	go test -v ./tests/e2e/...
+
+test-backend: ## Run backend tests only
+	cd components/backend && go test -v ./...
+
+test-operator: ## Run operator tests only
+	cd components/operator && go test -v ./...
+
+test-frontend: ## Run frontend tests only
+	cd components/frontend && npm test
+
+test-e2e: ## Run end-to-end tests
+	go test -v ./tests/e2e/...
+
+test-coverage: ## Run tests with coverage
+	cd components/backend && go test -v -coverprofile=coverage.out ./...
+	cd components/operator && go test -v -coverprofile=coverage.out ./...
+	cd components/frontend && npm run test:coverage
 
 # Cleanup
 clean: ## Clean up all Kubernetes resources
