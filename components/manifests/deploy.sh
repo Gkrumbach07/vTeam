@@ -23,6 +23,100 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Helper: Run the OAuth setup (Route host, OAuthClient, Secret)
+oauth_setup() {
+    echo -e "${YELLOW}Configuring OpenShift OAuth for the frontend...${NC}"
+
+    # Determine Route name (try known names then fallback by label)
+    ROUTE_NAME_CANDIDATE="${ROUTE_NAME:-}"
+    if [[ -z "$ROUTE_NAME_CANDIDATE" ]]; then
+        if oc get route frontend-route -n ${NAMESPACE} >/dev/null 2>&1; then
+            ROUTE_NAME_CANDIDATE="frontend-route"
+        elif oc get route frontend -n ${NAMESPACE} >/dev/null 2>&1; then
+            ROUTE_NAME_CANDIDATE="frontend"
+        else
+            ROUTE_NAME_CANDIDATE=$(oc get route -n ${NAMESPACE} -l app=frontend -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        fi
+    fi
+
+    if [[ -z "$ROUTE_NAME_CANDIDATE" ]]; then
+        echo -e "${RED}❌ Could not find a Route for the frontend in namespace ${NAMESPACE}.${NC}"
+        echo -e "${YELLOW}Make sure manifests are applied and a Route exists (e.g., name 'frontend-route').${NC}"
+        return 1
+    fi
+    ROUTE_NAME="$ROUTE_NAME_CANDIDATE"
+    echo -e "${BLUE}Using Route: ${ROUTE_NAME}${NC}"
+
+    # Ensure Route host is set to <namespace>.<cluster apps domain>
+    echo -e "${BLUE}Setting Route host if needed...${NC}"
+    ROUTE_DOMAIN=$(oc get ingresses.config cluster -o jsonpath='{.spec.domain}')
+    if [[ -z "$ROUTE_DOMAIN" ]]; then
+        echo -e "${YELLOW}Could not detect cluster apps domain; skipping Route host patch.${NC}"
+    else
+        DESIRED_HOST="${NAMESPACE}.${ROUTE_DOMAIN}"
+        CURRENT_HOST=$(oc -n ${NAMESPACE} get route ${ROUTE_NAME} -o jsonpath='{.spec.host}' 2>/dev/null || true)
+        if [[ -z "$CURRENT_HOST" || "$CURRENT_HOST" != "$DESIRED_HOST" ]]; then
+            echo -e "${BLUE}Patching Route host to ${DESIRED_HOST}...${NC}"
+            oc -n ${NAMESPACE} patch route ${ROUTE_NAME} --type=merge -p "{\"spec\":{\"host\":\"${DESIRED_HOST}\"}}"
+        else
+            echo -e "${GREEN}Route host already set to ${CURRENT_HOST}${NC}"
+        fi
+    fi
+
+    ROUTE_HOST=$(oc -n ${NAMESPACE} get route ${ROUTE_NAME} -o jsonpath='{.spec.host}' 2>/dev/null || true)
+    if [[ -z "$ROUTE_HOST" ]]; then
+        echo -e "${YELLOW}Route host is empty; OAuthClient redirect URI may be incomplete.${NC}"
+    else
+        echo -e "${GREEN}Route host: https://${ROUTE_HOST}${NC}"
+    fi
+
+    # Create/Update cluster-scoped OAuthClient (requires cluster-admin)
+    echo -e "${BLUE}Creating/Updating OAuthClient 'ambient-frontend'...${NC}"
+    cat > /tmp/ambient-frontend-oauthclient.yaml <<EOF
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: ambient-frontend
+secret: ${CLIENT_SECRET_VALUE}
+redirectURIs:
+- https://${ROUTE_HOST}/oauth/callback
+grantMethod: auto
+EOF
+    set +e
+    oc apply -f /tmp/ambient-frontend-oauthclient.yaml
+    OAUTH_APPLY_RC=$?
+    set -e
+    rm -f /tmp/ambient-frontend-oauthclient.yaml
+    if [[ ${OAUTH_APPLY_RC} -ne 0 ]]; then
+        echo -e "${YELLOW}⚠️ Could not create/update cluster-scoped OAuthClient. You likely need cluster-admin.${NC}"
+        echo -e "${YELLOW}Ask an admin to run:${NC}"
+        echo "oc apply -f - <<'EOF'"
+        echo "apiVersion: oauth.openshift.io/v1"
+        echo "kind: OAuthClient"
+        echo "metadata:"
+        echo "  name: ambient-frontend"
+        echo "secret: ${CLIENT_SECRET_VALUE}"
+        echo "redirectURIs:"
+        echo "- https://${ROUTE_HOST}/oauth/callback"
+        echo "grantMethod: auto"
+        echo "EOF"
+    else
+        echo -e "${GREEN}✅ OAuthClient configured${NC}"
+    fi
+
+    # Create/Update the frontend OAuth secret in the namespace
+    echo -e "${BLUE}Creating/Updating Secret 'frontend-oauth-config'...${NC}"
+    oc -n ${NAMESPACE} create secret generic frontend-oauth-config \
+      --from-literal=client-secret="${CLIENT_SECRET_VALUE}" \
+      --from-literal=cookie_secret="${COOKIE_SECRET_VALUE}" \
+      --dry-run=client -o yaml | oc apply -f -
+    echo -e "${GREEN}✅ Secret configured${NC}"
+
+    # Restart frontend to pick up new secret
+    echo -e "${BLUE}Restarting frontend deployment...${NC}"
+    oc -n ${NAMESPACE} rollout restart deployment/frontend
+}
+
 # Configuration
 NAMESPACE="${NAMESPACE:-ambient-code}"
 # Allow overriding images via CONTAINER_REGISTRY/IMAGE_TAG or explicit DEFAULT_*_IMAGE
@@ -69,6 +163,69 @@ if [ "${1:-}" = "uninstall" ]; then
     echo -e "${GREEN}✅ vTeam uninstalled from namespace ${NAMESPACE}${NC}"
     echo -e "${YELLOW}Note: Namespace ${NAMESPACE} still exists. Delete manually if needed:${NC}"
     echo -e "   ${BLUE}oc delete namespace ${NAMESPACE}${NC}"
+    exit 0
+fi
+
+# Handle secrets-only command (OAuth setup only)
+if [ "${1:-}" = "secrets" ]; then
+    echo -e "${YELLOW}Running OAuth secrets setup only...${NC}"
+
+    # Check prerequisites for secrets subcommand
+    if ! command_exists oc; then
+        echo -e "${RED}❌ OpenShift CLI (oc) not found. Please install it first.${NC}"
+        exit 1
+    fi
+    if ! oc whoami >/dev/null 2>&1; then
+        echo -e "${RED}❌ Not logged in to OpenShift. Please run 'oc login' first.${NC}"
+        exit 1
+    fi
+
+    # Load .env
+    echo -e "${YELLOW}Loading environment configuration (.env)...${NC}"
+    ENV_FILE=".env"
+    if [[ ! -f "$ENV_FILE" ]]; then
+        echo -e "${RED}❌ .env file not found${NC}"
+        echo -e "${YELLOW}Please create .env file from env.example:${NC}"
+        echo "  cp env.example .env"
+        echo "  # Edit .env and add your actual API key and Git configuration"
+        exit 1
+    fi
+    set -a
+    source "$ENV_FILE"
+    set +a
+
+    # Generate secrets values like in full deploy
+    OAUTH_ENV_FILE="oauth-secret.env"
+    CLIENT_SECRET_VALUE="${OCP_OAUTH_CLIENT_SECRET:-}"
+    COOKIE_SECRET_VALUE="${OCP_OAUTH_COOKIE_SECRET:-}"
+    if [[ -z "$CLIENT_SECRET_VALUE" ]]; then
+        CLIENT_SECRET_VALUE=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+    fi
+    COOKIE_LEN=${#COOKIE_SECRET_VALUE}
+    if [[ -z "$COOKIE_SECRET_VALUE" || ( $COOKIE_LEN -ne 16 && $COOKIE_LEN -ne 24 && $COOKIE_LEN -ne 32 ) ]]; then
+        COOKIE_SECRET_VALUE=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+    fi
+    cat > "$OAUTH_ENV_FILE" << EOF
+client-secret=${CLIENT_SECRET_VALUE}
+cookie_secret=${COOKIE_SECRET_VALUE}
+EOF
+
+    # Ensure namespace exists and switch
+    if ! oc get namespace ${NAMESPACE} >/dev/null 2>&1; then
+        echo -e "${RED}❌ Namespace ${NAMESPACE} does not exist. Deploy manifests first.${NC}"
+        rm -f "$OAUTH_ENV_FILE"
+        exit 1
+    fi
+    oc project ${NAMESPACE}
+
+    # Perform OAuth setup
+    if ! oauth_setup; then
+        echo -e "${YELLOW}OAuth setup completed with warnings/errors. See messages above.${NC}"
+    fi
+
+    # Cleanup
+    rm -f "$OAUTH_ENV_FILE"
+    echo -e "${GREEN}✅ Secrets subcommand completed${NC}"
     exit 0
 fi
 
@@ -212,8 +369,12 @@ echo -e "${GREEN}✅ Namespace ${NAMESPACE} is active${NC}"
 echo -e "${BLUE}Switching to namespace ${NAMESPACE}...${NC}"
 oc project ${NAMESPACE}
 
-# Secrets are now managed through the UI. Skip creating or patching any secrets here.
-echo -e "${BLUE}Skipping secret management (handled via UI).${NC}"
+###############################################
+# OAuth setup: Route host, OAuthClient, Secret
+###############################################
+if ! oauth_setup; then
+    echo -e "${YELLOW}OAuth setup completed with warnings/errors. You may need a cluster-admin to apply the OAuthClient.${NC}"
+fi
 
 # Apply git configuration if we created a patch
 if [[ -f "/tmp/git-config-patch.yaml" ]]; then
@@ -255,7 +416,14 @@ oc get services -n ${NAMESPACE}
 echo ""
 echo -e "${BLUE}Routes:${NC}"
 oc get route -n ${NAMESPACE} || true
-ROUTE_HOST=$(oc get route frontend-route -n ${NAMESPACE} -o jsonpath='{.spec.host}' 2>/dev/null || true)
+if [[ -z "${ROUTE_NAME:-}" ]]; then
+    if oc get route frontend-route -n ${NAMESPACE} >/dev/null 2>&1; then
+        ROUTE_NAME="frontend-route"
+    elif oc get route frontend -n ${NAMESPACE} >/dev/null 2>&1; then
+        ROUTE_NAME="frontend"
+    fi
+fi
+ROUTE_HOST=$(oc get route ${ROUTE_NAME:-frontend-route} -n ${NAMESPACE} -o jsonpath='{.spec.host}' 2>/dev/null || true)
 echo ""
 
 # Cleanup generated files

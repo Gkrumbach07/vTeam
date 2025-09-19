@@ -149,6 +149,7 @@ function getCategoryForRole(role: string): string {
 }
 
 export const WORKFLOW_PHASE_LABELS = {
+  pre: "⏳ Pre",
   specify: "📝 Specify",
   plan: "🗂️ Plan",
   tasks: "✅ Tasks",

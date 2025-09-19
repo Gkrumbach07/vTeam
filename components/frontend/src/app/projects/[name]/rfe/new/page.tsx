@@ -13,9 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { AgentSelection } from "@/components/agent-selection";
 import { CreateRFEWorkflowRequest } from "@/types/agentic-session";
-import { DEFAULT_AGENT_SELECTIONS } from "@/lib/agents";
 import { getApiUrl } from "@/lib/config";
 
 const formSchema = z.object({
@@ -23,7 +21,6 @@ const formSchema = z.object({
   description: z.string().min(20, "Description must be at least 20 characters long"),
   targetRepoUrl: z.string().url("Please enter a valid repository URL"),
   targetRepoBranch: z.string().min(1, "Branch is required"),
-  selectedAgents: z.array(z.string()).min(1, "At least one agent must be selected"),
   gitUserName: z.string().optional(),
   gitUserEmail: z.union([z.literal(""), z.string().email("Please enter a valid email")]).optional(),
 });
@@ -45,27 +42,14 @@ export default function ProjectNewRFEWorkflowPage() {
       description: "",
       targetRepoUrl: "",
       targetRepoBranch: "main",
-      selectedAgents: DEFAULT_AGENT_SELECTIONS.BALANCED,
       gitUserName: "",
       gitUserEmail: "",
     },
   });
 
-  const handleAgentSelectionChange = useCallback((agents: string[]) => {
-    try {
-      if (!Array.isArray(agents)) return;
-      const invalid = agents.filter(a => typeof a !== "string");
-      if (invalid.length > 0) return;
-      form.setValue("selectedAgents", agents, { shouldValidate: false, shouldDirty: true });
-    } catch {}
-  }, [form]);
+  const handleAgentSelectionChange = useCallback((_agents: string[]) => {}, []);
 
   const onSubmit = async (values: FormValues) => {
-    if (!values.selectedAgents || values.selectedAgents.length === 0) {
-      setError("Please select at least one agent");
-      return;
-    }
-
     setIsSubmitting(true);
     setError(null);
 
@@ -75,7 +59,6 @@ export default function ProjectNewRFEWorkflowPage() {
         description: values.description,
         targetRepoUrl: values.targetRepoUrl,
         targetRepoBranch: values.targetRepoBranch,
-        selectedAgents: values.selectedAgents,
         gitUserName: values.gitUserName || undefined,
         gitUserEmail: values.gitUserEmail || undefined,
       };
@@ -162,22 +145,7 @@ export default function ProjectNewRFEWorkflowPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2"><Users className="h-5 w-5" />Agent Selection</CardTitle>
-                <CardDescription>Choose AI agents to participate in the RFE workflow</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <FormField control={form.control} name="selectedAgents" render={({ field, fieldState }) => (
-                  <FormItem>
-                    <FormControl>
-                      <AgentSelection selectedAgents={Array.isArray(field.value) ? field.value : []} onSelectionChange={handleAgentSelectionChange} maxAgents={8} disabled={isSubmitting} />
-                    </FormControl>
-                    {fieldState.error && (<FormMessage>{fieldState.error.message}</FormMessage>)}
-                  </FormItem>
-                )} />
-              </CardContent>
-            </Card>
+            {/* Agent selection archived for now */}
 
             <Card>
               <CardHeader>

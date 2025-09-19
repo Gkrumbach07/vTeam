@@ -301,15 +301,18 @@ type AgenticSessionStatus struct {
 }
 
 type CreateAgenticSessionRequest struct {
-	Prompt            string             `json:"prompt" binding:"required"`
-	WebsiteURL        string             `json:"websiteURL" binding:"required,url"`
-	DisplayName       string             `json:"displayName,omitempty"`
-	LLMSettings       *LLMSettings       `json:"llmSettings,omitempty"`
-	Timeout           *int               `json:"timeout,omitempty"`
-	GitConfig         *GitConfig         `json:"gitConfig,omitempty"`
-	UserContext       *UserContext       `json:"userContext,omitempty"`
-	BotAccount        *BotAccountRef     `json:"botAccount,omitempty"`
-	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
+	Prompt               string             `json:"prompt" binding:"required"`
+	WebsiteURL           string             `json:"websiteURL,omitempty"`
+	DisplayName          string             `json:"displayName,omitempty"`
+	LLMSettings          *LLMSettings       `json:"llmSettings,omitempty"`
+	Timeout              *int               `json:"timeout,omitempty"`
+	GitConfig            *GitConfig         `json:"gitConfig,omitempty"`
+	UserContext          *UserContext       `json:"userContext,omitempty"`
+	BotAccount           *BotAccountRef     `json:"botAccount,omitempty"`
+	ResourceOverrides    *ResourceOverrides `json:"resourceOverrides,omitempty"`
+	EnvironmentVariables map[string]string  `json:"environmentVariables,omitempty"`
+	Labels               map[string]string  `json:"labels,omitempty"`
+	Annotations          map[string]string  `json:"annotations,omitempty"`
 }
 
 // RFE Workflow Data Structures
@@ -318,8 +321,7 @@ type RFEWorkflow struct {
 	Title            string                 `json:"title"`
 	Description      string                 `json:"description"`
 	Status           string                 `json:"status"`       // "draft", "in_progress", "completed", "failed"
-	CurrentPhase     string                 `json:"currentPhase"` // "specify", "plan", "tasks", "completed"
-	SelectedAgents   []string               `json:"selectedAgents"`
+	CurrentPhase     string                 `json:"currentPhase"` // "pre", "specify", "plan", "tasks", "completed"
 	TargetRepoUrl    string                 `json:"targetRepoUrl"`
 	TargetRepoBranch string                 `json:"targetRepoBranch"`
 	Project          string                 `json:"project,omitempty"`
@@ -365,13 +367,12 @@ type PhaseResult struct {
 }
 
 type CreateRFEWorkflowRequest struct {
-	Title            string   `json:"title" binding:"required"`
-	Description      string   `json:"description" binding:"required"`
-	TargetRepoUrl    string   `json:"targetRepoUrl" binding:"required,url"`
-	TargetRepoBranch string   `json:"targetRepoBranch" binding:"required"`
-	SelectedAgents   []string `json:"selectedAgents" binding:"required,min=1"`
-	GitUserName      *string  `json:"gitUserName,omitempty"`
-	GitUserEmail     *string  `json:"gitUserEmail,omitempty"`
+	Title            string  `json:"title" binding:"required"`
+	Description      string  `json:"description" binding:"required"`
+	TargetRepoUrl    string  `json:"targetRepoUrl" binding:"required,url"`
+	TargetRepoBranch string  `json:"targetRepoBranch" binding:"required"`
+	GitUserName      *string `json:"gitUserName,omitempty"`
+	GitUserEmail     *string `json:"gitUserEmail,omitempty"`
 }
 
 type AdvancePhaseRequest struct {
@@ -541,7 +542,6 @@ func rfeWorkflowToCRObject(workflow *RFEWorkflow) map[string]interface{} {
 		"project":          workflow.Project,
 		"title":            workflow.Title,
 		"description":      workflow.Description,
-		"selectedAgents":   workflow.SelectedAgents,
 		"targetRepoUrl":    workflow.TargetRepoUrl,
 		"targetRepoBranch": workflow.TargetRepoBranch,
 	}
@@ -640,7 +640,6 @@ func loadProjectRFEWorkflowFromCRWithClient(dyn dynamic.Interface, project, id s
 		Description:      fmt.Sprintf("%v", spec["description"]),
 		Status:           fmt.Sprintf("%v", status["status"]),
 		CurrentPhase:     fmt.Sprintf("%v", status["currentPhase"]),
-		SelectedAgents:   []string{},
 		TargetRepoUrl:    fmt.Sprintf("%v", spec["targetRepoUrl"]),
 		TargetRepoBranch: fmt.Sprintf("%v", spec["targetRepoBranch"]),
 		Project:          fmt.Sprintf("%v", spec["project"]),
@@ -649,11 +648,6 @@ func loadProjectRFEWorkflowFromCRWithClient(dyn dynamic.Interface, project, id s
 		AgentSessions:    []RFEAgentSession{},
 		Artifacts:        []RFEArtifact{},
 		PhaseResults:     map[string]PhaseResult{},
-	}
-	if sa, ok := spec["selectedAgents"].([]interface{}); ok {
-		for _, v := range sa {
-			wf.SelectedAgents = append(wf.SelectedAgents, fmt.Sprintf("%v", v))
-		}
 	}
 	if sess, ok := status["agentSessions"].([]interface{}); ok {
 		for _, v := range sess {
@@ -1213,44 +1207,50 @@ func buildRFESessionSpecAndLabels(workflow *RFEWorkflow, phase, agentPersona str
 
 // Project-scoped: Create AgenticSessions for all selected agents
 func createAgentSessionsForPhaseProject(dyn dynamic.Interface, workflow *RFEWorkflow, phase string) error {
-	if len(workflow.SelectedAgents) == 0 {
-		return fmt.Errorf("no agents selected for workflow %s", workflow.ID)
-	}
 	if dyn == nil {
 		return fmt.Errorf("no dynamic client provided")
 	}
+	// Deprecated: previously created one per selected agent. Kept for compatibility.
 	var createdSessions []RFEAgentSession
-	for _, agentPersona := range workflow.SelectedAgents {
-		sessionName := fmt.Sprintf("%s-%s-%s", workflow.ID, phase, strings.ToLower(strings.ReplaceAll(agentPersona, "_", "-")))
-		sessionSpec, labels := buildRFESessionSpecAndLabels(workflow, phase, agentPersona, &workflow.Project)
-		session := map[string]interface{}{
-			"apiVersion": "vteam.ambient-code/v1alpha1",
-			"kind":       "AgenticSession",
-			"metadata": map[string]interface{}{
-				"name":      sessionName,
-				"namespace": workflow.Project,
-				"labels":    labels,
-			},
-			"spec":   sessionSpec,
-			"status": map[string]interface{}{"phase": "Pending"},
-		}
-		gvr := getAgenticSessionV1Alpha1Resource()
-		obj := &unstructured.Unstructured{Object: session}
-		if _, err := dyn.Resource(gvr).Namespace(workflow.Project).Create(context.TODO(), obj, v1.CreateOptions{}); err != nil {
-			log.Printf("❌ Failed to create AgenticSession %s: %v", sessionName, err)
-			return fmt.Errorf("failed to create agent session %s: %v", sessionName, err)
-		}
-		agentSession := RFEAgentSession{ID: sessionName, AgentPersona: agentPersona, Phase: phase, Status: "pending"}
-		createdSessions = append(createdSessions, agentSession)
-		log.Printf("🤖 Created AgenticSession %s for agent %s in phase %s (project=%s)", sessionName, agentPersona, phase, workflow.Project)
-	}
+	// No-op in new model (single session per phase via createSingleAgentSessionForPhaseProject)
 	workflow.AgentSessions = append(workflow.AgentSessions, createdSessions...)
 	workflow.Status = "in_progress"
 	workflow.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := saveProjectRFEWorkflow(workflow); err != nil {
-		log.Printf("⚠️ Failed to save workflow after creating agent sessions: %v", err)
-	}
 	log.Printf("✅ Created %d AgenticSessions for workflow %s phase %s (project=%s)", len(createdSessions), workflow.ID, phase, workflow.Project)
+	return nil
+}
+
+// Project-scoped: Create a single AgenticSession per phase (agent selection archived)
+func createSingleAgentSessionForPhaseProject(dyn dynamic.Interface, workflow *RFEWorkflow, phase string) error {
+	if dyn == nil {
+		return fmt.Errorf("no dynamic client provided")
+	}
+	// Use a generic persona placeholder to keep envs stable
+	agentPersona := "RFE_PHASE_RUNNER"
+	sessionName := fmt.Sprintf("%s-%s", workflow.ID, phase)
+	sessionSpec, labels := buildRFESessionSpecAndLabels(workflow, phase, agentPersona, &workflow.Project)
+	session := map[string]interface{}{
+		"apiVersion": "vteam.ambient-code/v1alpha1",
+		"kind":       "AgenticSession",
+		"metadata": map[string]interface{}{
+			"name":      sessionName,
+			"namespace": workflow.Project,
+			"labels":    labels,
+		},
+		"spec":   sessionSpec,
+		"status": map[string]interface{}{"phase": "Pending"},
+	}
+	gvr := getAgenticSessionV1Alpha1Resource()
+	obj := &unstructured.Unstructured{Object: session}
+	if _, err := dyn.Resource(gvr).Namespace(workflow.Project).Create(context.TODO(), obj, v1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			log.Printf("❌ Failed to create AgenticSession %s: %v", sessionName, err)
+			return fmt.Errorf("failed to create agent session %s: %v", sessionName, err)
+		}
+	}
+	workflow.AgentSessions = append(workflow.AgentSessions, RFEAgentSession{ID: sessionName, AgentPersona: agentPersona, Phase: phase, Status: "pending"})
+	workflow.Status = "in_progress"
+	workflow.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	return nil
 }
 

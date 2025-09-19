@@ -36,10 +36,6 @@ spec:
                 type: string
               description:
                 type: string
-              selectedAgents:
-                type: array
-                items:
-                  type: string
               targetRepoUrl:
                 type: string
               targetRepoBranch:

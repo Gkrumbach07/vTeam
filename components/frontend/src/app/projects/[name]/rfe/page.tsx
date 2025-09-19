@@ -12,6 +12,7 @@ import { RFEWorkflow, WorkflowPhase } from "@/types/agentic-session";
 import { Plus, RefreshCw } from "lucide-react";
 
 const phaseLabel: Record<WorkflowPhase, string> = {
+  pre: "Pre",
   specify: "Specify",
   plan: "Plan",
   tasks: "Tasks",
@@ -20,14 +21,15 @@ const phaseLabel: Record<WorkflowPhase, string> = {
 };
 
 function calcProgress(w: RFEWorkflow): number {
-  const phases: WorkflowPhase[] = ["specify", "plan", "tasks", "review"];
+  const phases: WorkflowPhase[] = ["pre", "specify", "plan", "tasks", "review"];
   if (w.status === "completed") return 100;
   const idx = phases.indexOf(w.currentPhase);
   if (idx < 0) return 0;
   const inPhase = (w.agentSessions || []).filter(s => s.phase === w.currentPhase);
   const done = inPhase.filter(s => s.status === "Completed").length;
-  const phasePct = inPhase.length ? (done / inPhase.length) * 25 : 0;
-  return Math.min(idx * 25 + phasePct, 100);
+  const perPhasePct = 100 / (phases.length);
+  const phasePct = inPhase.length ? (done / inPhase.length) * perPhasePct : 0;
+  return Math.min(idx * perPhasePct + phasePct, 100);
 }
 
 export default function ProjectRFEListPage() {
